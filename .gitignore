@@ -205,3 +205,32 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ── Project-specific ─────────────────────────────────────────────────────────
+# Large model checkpoints — use Git LFS or store on Drive
+*.ckpt
+*.pt
+*.pth
+*.bin
+
+# Large data files
+*.tar.gz
+*.zip
+subs_train.jsonl
+
+# Video files
+*.mp4
+*.avi
+*.mkv
+
+# Extracted frames and processed Drive outputs (live on Google Drive, not git)
+qvh_frames/
+qvh_videos/
+processed/
+outputs/
+
+# Visualisation outputs
+*.png
+
+# Moment-DETR upstream repo — added as git submodule, not tracked directly
+code/Moment_DETR/moment_detr/
