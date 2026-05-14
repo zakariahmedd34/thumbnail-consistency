@@ -1,0 +1,13 @@
+# Consistency scorer config (matches src.scoring.consistency.ScoringConfig)
+alpha: 0.5
+tau: 0.1
+top_p: 0.25
+chunk_window: 75
+chunk_stride: 60
+damp_with_fg: false
+
+paths:
+  feature_dir:  Moment_DETR/moment_detr/features/clip_features
+  text_feat_dir: Moment_DETR/moment_detr/features/clip_text_features
+  m1_ckpt:      Moment_DETR/moment_detr/run_on_video/moment_detr_ckpt/model_best.ckpt
+  repo_root:    .

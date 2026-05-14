@@ -1,0 +1,15 @@
+# Evaluation config
+consistency_eval_jsonl: processed/consistency_eval.jsonl
+m2_image_emb_npz:       processed/m2_image_emb.npz
+thumbnail_emb_npz:      processed/thumbnail_image_emb.npz
+
+ablation_query_sources:
+  - gt_query        # ground-truth QVH query (ceiling)
+  - clipcap_k3      # 3 nucleus-sampled queries from ClipCap
+  - clipcap_k1      # single greedy query from ClipCap
+  - thumb_only      # no query path; e_T only
+  - random_query    # control
+
+output:
+  predictions_jsonl: outputs/predictions/consistency_scores.jsonl
+  figures_dir:       outputs/figures
