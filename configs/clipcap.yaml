@@ -1,4 +1,4 @@
-# ClipCap training config
+# ClipCap training config (paths are absolute, Drive-rooted)
 model:
   clip_dim: 512
   prefix_len: 10
@@ -6,8 +6,13 @@ model:
   freeze_gpt2: true
 
 data:
-  train_jsonl: processed/m2_train_pairs.jsonl
-  val_jsonl:   processed/m2_val_pairs.jsonl
+  # Default: single-frame pairs (always present after data_collection runs).
+  # For ★ multi-frame augmentation (recommended): edit train_jsonl to
+  #   .../processed/m2_train_pairs_multi.jsonl
+  # but make sure you've run the multi-frame extraction cell in
+  # data_collection_preparation.ipynb FIRST.
+  train_jsonl: /content/drive/MyDrive/thumbnail_project/processed/m2_train_pairs.jsonl
+  val_jsonl:   /content/drive/MyDrive/thumbnail_project/processed/m2_val_pairs.jsonl
   max_caption_tokens: 25
 
 train:
@@ -19,7 +24,7 @@ train:
   grad_clip: 1.0
   warmup_ratio: 0.05
   early_stop_patience: 3
-  early_stop_metric: clip_text_sim   # or 'val_loss'
+  early_stop_metric: clip_text_sim
 
 generation:
   max_new_tokens: 25
@@ -31,7 +36,7 @@ generation:
   no_repeat_ngram_size: 2
 
 output:
-  ckpt_dir: outputs/checkpoints
+  ckpt_dir: /content/drive/MyDrive/thumbnail_project/checkpoints
   best_name: clipcap_best.pt
 
 seed: 2026

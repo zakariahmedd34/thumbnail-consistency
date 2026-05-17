@@ -49,9 +49,42 @@ def get_gpt2():
 
 
 @torch.no_grad()
+def _vision_pooled(model, pixel_values):
+    """Return post-pooler feature from vision_model, regardless of HF version."""
+    out = model.vision_model(pixel_values=pixel_values)
+    if hasattr(out, "pooler_output") and out.pooler_output is not None:
+        return out.pooler_output
+    if hasattr(out, "last_hidden_state"):
+        return out.last_hidden_state[:, 0]
+    if isinstance(out, tuple):
+        return out[1] if len(out) > 1 else out[0][:, 0]
+    raise RuntimeError(f"Unexpected vision_model output: {type(out)}")
+
+
+@torch.no_grad()
+def _text_pooled(model, input_ids, attention_mask):
+    """Return post-pooler feature from text_model, regardless of HF version."""
+    out = model.text_model(input_ids=input_ids, attention_mask=attention_mask)
+    if hasattr(out, "pooler_output") and out.pooler_output is not None:
+        return out.pooler_output
+    if hasattr(out, "last_hidden_state"):
+        return out.last_hidden_state[:, 0]
+    if isinstance(out, tuple):
+        return out[1] if len(out) > 1 else out[0][:, 0]
+    raise RuntimeError(f"Unexpected text_model output: {type(out)}")
+
+
+@torch.no_grad()
 def encode_image(paths: List[str], batch: int = 32) -> Tuple["torch.Tensor", List[str]]:
-    """Batch-encode images. Returns (N, 512) L2-normalized + list of successful paths."""
+    """Batch-encode images. Returns (N, 512) L2-normalized + list of successful paths.
+
+    Bypasses model.get_image_features() because some transformers versions return
+    BaseModelOutputWithPooling there instead of a tensor, breaking `.norm()`.
+    """
     model, proc, _, dev = get_clip()
+    vision_hidden = model.config.vision_config.hidden_size   # 768 for ViT-B/32
+    proj_dim      = model.config.projection_dim              # 512 for ViT-B/32
+
     embs, kept = [], []
     for i in range(0, len(paths), batch):
         chunk = paths[i:i + batch]
@@ -65,24 +98,50 @@ def encode_image(paths: List[str], batch: int = 32) -> Tuple["torch.Tensor", Lis
         if not imgs:
             continue
         inp = proc(images=imgs, return_tensors="pt").to(dev)
-        e = model.get_image_features(**inp)
+        pooled = _vision_pooled(model, inp["pixel_values"])
+        # Apply visual_projection only if pooled feature is in vision_hidden space
+        if pooled.shape[-1] == vision_hidden:
+            e = model.visual_projection(pooled)            # 768 -> 512
+        elif pooled.shape[-1] == proj_dim:
+            e = pooled                                     # already 512
+        else:
+            raise RuntimeError(
+                f"Unexpected pooled image dim {pooled.shape[-1]}; "
+                f"expected {vision_hidden} or {proj_dim}."
+            )
         e = e / e.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         embs.append(e.cpu())
         kept.extend(ok)
     if not embs:
-        return torch.zeros((0, 512)), []
+        return torch.zeros((0, proj_dim)), []
     return torch.cat(embs, dim=0), kept
 
 
 @torch.no_grad()
 def encode_text(texts: List[str], batch: int = 64) -> "torch.Tensor":
-    """Batch-encode texts. Returns (N, 512) L2-normalized."""
+    """Batch-encode texts. Returns (N, 512) L2-normalized.
+
+    Bypasses model.get_text_features() for the same HF-version reason as
+    encode_image.
+    """
     model, _, tok, dev = get_clip()
+    text_hidden = model.config.text_config.hidden_size       # 512 for ViT-B/32
+    proj_dim    = model.config.projection_dim                # 512
+
     embs = []
     for i in range(0, len(texts), batch):
         chunk = texts[i:i + batch]
         toks = tok(chunk, padding=True, truncation=True, return_tensors="pt").to(dev)
-        e = model.get_text_features(**toks)
+        pooled = _text_pooled(model, toks["input_ids"], toks["attention_mask"])
+        if pooled.shape[-1] == text_hidden:
+            e = model.text_projection(pooled)
+        elif pooled.shape[-1] == proj_dim:
+            e = pooled
+        else:
+            raise RuntimeError(
+                f"Unexpected pooled text dim {pooled.shape[-1]}; "
+                f"expected {text_hidden} or {proj_dim}."
+            )
         e = e / e.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         embs.append(e.cpu())
     return torch.cat(embs, dim=0)

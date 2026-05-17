@@ -52,6 +52,10 @@ class MomentDETRFeaturePredictor:
         # The official ckpt also stores its training opts.
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         opt = ckpt["opt"]
+        # CRITICAL: opt.device was 'cuda' when the ckpt was trained. On CPU
+        # runtimes, build_model() calls torch.cuda.* unconditionally and crashes
+        # with "Torch not compiled with CUDA enabled" if we don't override it.
+        opt.device = self.device
         # build_model expects a Namespace-like with the right attrs.
         model, _ = build_model(opt)
         model.load_state_dict(ckpt["model"])
