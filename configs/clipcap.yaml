@@ -1,0 +1,42 @@
+# ClipCap training config (paths are absolute, Drive-rooted)
+model:
+  clip_dim: 512
+  prefix_len: 10
+  gpt2_name: gpt2
+  freeze_gpt2: true
+
+data:
+  # Default: single-frame pairs (always present after data_collection runs).
+  # For ★ multi-frame augmentation (recommended): edit train_jsonl to
+  #   .../processed/m2_train_pairs_multi.jsonl
+  # but make sure you've run the multi-frame extraction cell in
+  # data_collection_preparation.ipynb FIRST.
+  train_jsonl: /content/drive/MyDrive/thumbnail_project/processed/m2_train_pairs.jsonl
+  val_jsonl:   /content/drive/MyDrive/thumbnail_project/processed/m2_val_pairs.jsonl
+  max_caption_tokens: 25
+
+train:
+  batch_size: 32
+  epochs: 20
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  warmup_ratio: 0.05
+  early_stop_patience: 3
+  early_stop_metric: clip_text_sim
+
+generation:
+  max_new_tokens: 25
+  num_return_sequences: 3
+  do_sample: true
+  top_p: 0.9
+  temperature: 1.1
+  num_beams: 1
+  no_repeat_ngram_size: 2
+
+output:
+  ckpt_dir: /content/drive/MyDrive/thumbnail_project/checkpoints
+  best_name: clipcap_best.pt
+
+seed: 2026

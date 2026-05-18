@@ -1,0 +1,7 @@
+# M2 generator config — ground-truth lookup (ceiling baseline)
+m2: gt
+m2_kwargs:
+  lookup_jsonl: /content/drive/MyDrive/thumbnail_project/processed/consistency_eval.jsonl
+
+k_queries: 1
+device: cpu
