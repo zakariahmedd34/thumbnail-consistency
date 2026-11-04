@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thumbnail-Video Consistency</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Thumbnail-Video Consistency</h1>
+    <p class="subtitle">Upload a thumbnail and pick a QVHighlights video id to score how well they match.</p>
+  </header>
+
+  <section class="status">
+    <h2>Status</h2>
+    <ul>
+      <li>Default generator: <code>{{ pipe.default_gen }}</code> &nbsp;|&nbsp; K = {{ pipe.k }} &nbsp;|&nbsp; threshold = {{ pipe.threshold }}</li>
+      {% for k, ok in assets.items() %}
+      <li>{{ k }}: <span class="{{ 'ok' if ok else 'missing' }}">{{ 'present' if ok else 'MISSING' }}</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="form">
+    <h2>Score a pair</h2>
+    <form id="score-form">
+      <label>Thumbnail image
+        <input type="file" name="thumbnail" accept="image/*" required>
+      </label>
+      <label>Video id (e.g. <code>6cy4Gu4brU4_60.0_210.0</code>; leave empty to only generate queries)
+        <input type="text" name="vid">
+      </label>
+      <label>Generator
+        <select name="gen">
+          {% for name in gens %}
+          <option value="{{ name }}" {% if name == pipe.default_gen %}selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>K (queries)
+        <input type="number" name="k" min="1" max="5" value="{{ pipe.k }}">
+      </label>
+      <label>qid (only for generator = gt)
+        <input type="number" name="qid">
+      </label>
+      <label>Or type your own queries (one per line; skips the generator)
+        <textarea name="queries" rows="3"></textarea>
+      </label>
+      <button type="submit">Score</button>
+    </form>
+  </section>
+
+  <section class="result" id="result-section" hidden>
+    <h2>Result</h2>
+    <pre id="result-json"></pre>
+  </section>
+
+  <script>
+    document.getElementById("score-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const out = document.getElementById("result-json");
+      document.getElementById("result-section").hidden = false;
+      out.textContent = "Running... (the first request loads the models and can take a minute)";
+      const r = await fetch("/v1/score", {method: "POST", body: new FormData(ev.target)});
+      out.textContent = JSON.stringify(await r.json(), null, 2);
+    });
+  </script>
+</body>
+</html>

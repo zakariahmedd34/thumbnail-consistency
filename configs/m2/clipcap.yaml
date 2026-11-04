@@ -1,9 +1,0 @@
-# M2 generator config — ClipCap (trained baseline)
-m2: clipcap
-m2_kwargs:
-  ckpt_path: /content/drive/MyDrive/thumbnail_project/checkpoints/clipcap_best.pt
-  prefix_len: 10
-  gpt2_name: gpt2
-
-k_queries: 3
-device: cuda

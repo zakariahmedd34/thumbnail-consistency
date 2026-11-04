@@ -1,8 +1,0 @@
-# M2 generator config — random control baseline
-m2: random
-m2_kwargs:
-  pool_jsonl: /content/drive/MyDrive/thumbnail_project/processed/consistency_eval.jsonl
-  seed: 2026
-
-k_queries: 1
-device: cpu
