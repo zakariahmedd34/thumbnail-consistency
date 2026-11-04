@@ -1,0 +1,60 @@
+# The one config file for the project.
+#
+# Paths under `data:` are relative to data_dir. Other paths are relative to the
+# repo root. Override data_dir with the THUMB_DATA_DIR environment variable
+# (for example on Colab: THUMB_DATA_DIR=/content/drive/MyDrive/thumbnail_project).
+
+data:
+  data_dir: data
+  features_dir: features/clip_features          # official QVHighlights CLIP video features (*.npz)
+  eval_sets:
+    easy: processed/consistency_eval.jsonl                    # random negatives
+    hard: processed/consistency_eval_hard.jsonl               # negatives from the same video
+    query_mismatch: processed/consistency_eval_query_mismatch.jsonl
+  clipcap_train: processed/m2_train_pairs.jsonl
+  clipcap_val: processed/m2_val_pairs.jsonl
+  clipcap_train_emb: processed/m2_image_emb.npz  # cached CLIP embeddings for clipcap_train
+
+moment_detr:
+  repo: Moment_DETR/moment_detr
+  checkpoint: Moment_DETR/moment_detr/run_on_video/moment_detr_ckpt/model_best.ckpt
+
+outputs_dir: outputs
+checkpoints_dir: checkpoints
+
+scoring:
+  alpha: 0.5          # weight on query-vs-video; (1 - alpha) on thumbnail-vs-video
+  tau: 0.1            # softmax temperature over M1 saliency
+  top_p: 0.25         # fraction of clips (by saliency) kept when pooling
+  chunk_window: 75    # Moment-DETR supports at most 75 clips (150 s)
+  chunk_stride: 60
+
+# Settings for each M2 (thumbnail -> query) generator, passed as keyword args.
+generators:
+  vlm:
+    # 2B fits a 4 GB GPU in 4-bit. On a bigger GPU try Qwen/Qwen2-VL-7B-Instruct.
+    model_id: Qwen/Qwen2-VL-2B-Instruct
+    load_in_4bit: true
+    max_pixels: 401408          # 512*28*28: caps image tokens (~512) to bound memory/latency
+    max_new_tokens: 40
+    min_grounding: 0.20         # reject captions whose CLIP sim to the image is below this
+  clipcap:
+    ckpt_path: checkpoints/clipcap_best.pt
+    prefix_len: 10
+
+clipcap_training:
+  batch_size: 32
+  epochs: 20
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  warmup_ratio: 0.05
+  grad_clip: 1.0
+  label_smoothing: 0.05
+  early_stop_patience: 3
+  max_caption_tokens: 25
+  seed: 2026
+
+app:
+  default_generator: vlm
+  k: 3
+  threshold: 0.5      # score >= threshold -> "consistent" (see README: how this was chosen)

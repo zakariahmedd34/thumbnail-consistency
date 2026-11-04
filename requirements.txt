@@ -1,0 +1,12 @@
+# Install PyTorch first, matching your CUDA version (see README), then:
+#   pip install -r requirements.txt
+numpy>=1.26
+scipy>=1.11            # Moment-DETR imports it; also Welch's t-test p-values
+pillow>=10
+pyyaml>=6
+tqdm>=4.66
+transformers>=4.57     # tested with 5.22
+accelerate>=1.0        # device_map="auto" for the VLM
+bitsandbytes>=0.45     # 4-bit VLM loading (optional on CPU-only machines)
+flask>=3.0
+pytest>=8

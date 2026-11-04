@@ -1,363 +1,325 @@
-# Thumbnail-Video Semantic Consistency
+# Thumbnail–Video Consistency
 
-Retrieval-grounded scoring of how well a YouTube thumbnail matches the video it represents.
-Built on QVHighlights + Moment-DETR + a ClipCap-style M2.
+> **Question this project answers:** *Does this thumbnail really show what happens in the video?*
+>
+> We give the system a **thumbnail image** and a **video**. It returns a **score**.
+> High score = the thumbnail matches the video. Low score = the thumbnail is misleading (clickbait).
 
-> **Master design document:** [docs/FINAL_DESIGN.md](docs/FINAL_DESIGN.md) — read this first.
-> **Status:** Day 1 scaffold landed. M2 training + consistency smoke test ready to run.
-> **Timeline:** 3 days. 4 people.
-
----
-
-## TL;DR
-
-```
-Thumbnail T
-  ├── CLIP-img (frozen) ─────────────────────────► e_T ───┐
-  └── ClipCap-M2 ★ trained ─► query q ─► CLIP-text ─► e_q │
-                                                          ▼
-              Moment-DETR (official ckpt, frozen) ──► saliency s[t]
-                                                          │
-                              saliency-softmax pool ──► e_clip_w
-                                                          │
-              C = mean_k max_w [0.5·cos(e_q, e_clip) + 0.5·cos(e_T, e_clip)]
-```
-
-- Only **two** components train: the M2 prefix MLP (~12M params) and (optional) a tiny consistency head.
-- Everything else is frozen pretrained.
-- Eval: AUC on 600 synthetic positive/hard-negative pairs + 50-pair manual gold set.
+This file is the **living document** of the project. Update it every time something changes
+(see [Changelog](#changelog) at the bottom).
 
 ---
 
-## What just landed (recent update)
+## Contents
 
-| Date | Change | Where |
+1. [The idea in simple words](#1-the-idea-in-simple-words)
+2. [How the pipeline works](#2-how-the-pipeline-works)
+3. [Project folders and files](#3-project-folders-and-files)
+4. [Setup (first time only)](#4-setup-first-time-only)
+5. [How to run it](#5-how-to-run-it)
+6. [Ready example to try](#6-ready-example-to-try)
+7. [Evaluation and results so far](#7-evaluation-and-results-so-far)
+8. [Current status: what works, what is pending](#8-current-status-what-works-what-is-pending)
+9. [Common problems](#9-common-problems)
+10. [Changelog](#changelog)
+
+---
+
+## 1. The idea in simple words
+
+A thumbnail is a promise: "this is what you will see". To check that promise we:
+
+1. **Describe the thumbnail in words.** A model looks at the image and writes short sentences
+   ("queries"), for example *"a man shows places to visit in Istanbul"*. This is **M2**.
+2. **Search the video for that description.** A video model (**Moment-DETR**, called **M1**)
+   finds *which seconds of the video* match the sentence.
+3. **Compare.** We check how similar the thumbnail and the sentence are to those found moments.
+   If the video really contains what the thumbnail shows, the similarity is high.
+
+All the comparing is done with **CLIP**, a model that turns images and text into vectors
+(lists of numbers). Similar things get similar vectors.
+
+---
+
+## 2. How the pipeline works
+
+```
+ Thumbnail ──► M2 generator ──► K queries (sentences)
+     │                               │
+     │ CLIP image                    │ CLIP text
+     ▼                               ▼
+    e_T                            e_q (one per query)
+     │                               │
+     │      Video features ──► Moment-DETR (M1) ──► "saliency": how relevant each 2-second clip is
+     │            │                                   │
+     │            └──── weighted average of the most relevant clips ◄──┘
+     │                               │
+     └──────────────► compare ◄──────┘
+                         ▼
+                 score C (one number)
+```
+
+**The formula** (in `src/scoring.py`):
+
+```
+C = average over queries of  max over video windows of
+        [ alpha · cos(query, window) + (1 − alpha) · cos(thumbnail, window) ]
+```
+
+| Setting (in `config.yaml`) | Meaning | Default |
 |---|---|---|
-| 2026-05-14 | Master design doc | [docs/FINAL_DESIGN.md](docs/FINAL_DESIGN.md) |
-| 2026-05-14 | Data notebook patched (B1–B6 bug fixes + 12 new pipeline cells) | [notebooks/data_collection_preparation.ipynb](notebooks/data_collection_preparation.ipynb) |
-| 2026-05-14 | Idempotent patch script (backed up the original) | [scripts/patch_data_notebook.py](scripts/patch_data_notebook.py) |
-| 2026-05-14 | `src/` package — utils / models / scoring / eval | [src/](src/) |
-| 2026-05-14 | YAML configs for ClipCap / consistency / eval | [configs/](configs/) |
-| 2026-05-14 | Unit tests for the scoring math (18/18 pass) | [tests/test_aggregate.py](tests/test_aggregate.py) |
-| 2026-05-14 | Three new notebooks: training, smoke test, full eval | [notebooks/](notebooks/) |
+| `alpha` | How much the **query** matters vs. the **thumbnail image** itself | 0.5 |
+| `tau` | How "sharp" the focus on the most relevant clips is (smaller = sharper) | 0.1 |
+| `top_p` | Fraction of clips kept when averaging (most relevant first) | 0.25 |
+| `chunk_window` / `chunk_stride` | Long videos are cut into 150 s windows (Moment-DETR limit is 75 clips) | 75 / 60 |
+
+### The M2 generators (who writes the queries)
+
+| Name | What it does | Needs GPU? | Status |
+|---|---|---|---|
+| `gt` | Uses the real human-written QVHighlights query. **Best possible case (upper bound).** | No | ✅ works |
+| `random` | Picks a random query. **Control: should score badly (AUC ≈ 0.5).** | No | ✅ works |
+| `vlm` | A vision-language model (Qwen2-VL-2B, 4-bit) describes the image. | Yes | ⏳ model download not finished |
+| `clipcap` | Our own small trained model: CLIP + a small MLP + GPT-2. **The only part we train.** | Yes (training) | ⏳ needs training |
+
+You can also skip M2 completely and type your own queries with `--queries`.
 
 ---
 
-## Repository layout
+## 3. Project folders and files
 
 ```
 thumbnail-consistency/
-├── README.md                                 # this file
-├── docs/
-│   ├── FINAL_DESIGN.md                       # ★ master design doc (read first)
-│   └── research/                             # background notes (read for context)
-├── configs/
-│   ├── clipcap.yaml                          # M2 hyperparams
-│   ├── consistency.yaml                      # α, τ, top_p, paths
-│   └── eval.yaml                             # ablation source list
-├── src/
-│   ├── utils/
-│   │   ├── io.py                             # utf-8 JSONL / YAML helpers
-│   │   └── seed.py                           # deterministic seeds
-│   ├── data/
-│   │   └── m2_dataset.py                     # PyTorch Dataset for M2 pairs
-│   ├── models/
-│   │   ├── encoders.py                       # cached CLIP / GPT-2 loaders
-│   │   ├── clipcap.py                        # ★ trained M2 (prefix MLP + frozen GPT-2)
-│   │   └── moment_detr.py                    # M1 wrapper (feature path + raw-video path)
-│   ├── scoring/
-│   │   ├── aggregate.py                      # pool, per-chunk, multi-query agg
-│   │   ├── chunking.py                       # >150s video chunking
-│   │   └── consistency.py                    # end-to-end ConsistencyScorer
-│   └── eval/
-│       └── metrics.py                        # AUC, Cohen's d, Welch's t
-├── tests/
-│   └── test_aggregate.py                     # pure-math unit tests
+├── README.md            ← this document
+├── config.yaml          ← THE single settings file (paths, scoring, models, app)
+├── requirements.txt     ← Python packages
+├── src/                 ← all the real logic
+│   ├── cli.py           ← command-line tool: check / generate / score / evaluate / train-clipcap
+│   ├── config.py        ← reads config.yaml, resolves file paths (also fixes old Colab paths)
+│   ├── scoring.py       ← ★ the score formula + ConsistencyScorer (the heart of the project)
+│   ├── moment_detr.py   ← wrapper around Moment-DETR (M1)
+│   ├── encoders.py      ← CLIP image/text encoders (loaded once, cached)
+│   ├── metrics.py       ← AUC, Cohen's d, Welch t-test
+│   └── generators/      ← M2 generators
+│       ├── __init__.py  ← registry: build("gt"), available()
+│       ├── baselines.py ← gt and random
+│       ├── vlm.py       ← Qwen2-VL (any Hugging Face vision-language model)
+│       └── clipcap.py   ← ClipCap model + its training loop
+├── app/                 ← small website (Flask) around the same pipeline
+│   ├── server.py        ← routes: /, /health, /v1/generators, /v1/score
+│   ├── templates/       ← HTML page
+│   └── static/          ← CSS
+├── tests/               ← pytest tests
 ├── notebooks/
-│   ├── data_collection_preparation.ipynb     # data pipeline (patched)
-│   ├── m1_baseline.ipynb                     # M1 sanity (existing)
-│   ├── train_clipcap.ipynb                   # ★ M2 training (NEW)
-│   ├── sanity_consistency.ipynb              # ★ R1 GT-query smoke test (NEW)
-│   ├── run_evaluation.ipynb                  # ★ full ablation eval (NEW)
-│   └── model 2/                              # legacy v1/v2/v3 (deprecated)
-├── scripts/
-│   └── patch_data_notebook.py                # idempotent notebook patcher
-├── Moment_DETR/                              # upstream Moment-DETR code (vendored)
-└── outputs/                                  # produced at runtime
-    ├── checkpoints/clipcap_best.pt
-    ├── predictions/*.jsonl
-    └── figures/*.png
+│   └── data_prep_colab.ipynb  ← how the data in data/ was built (run on Colab)
+├── data/                ← data (big files are NOT in git, see below)
+│   └── processed/       ← JSONL files: train/val/test + the 3 evaluation sets (in git)
+├── Moment_DETR/         ← upstream Moment-DETR code + checkpoint (NOT in git, you clone it)
+├── outputs/             ← results written by the tools (NOT in git)
+└── checkpoints/         ← trained ClipCap weights (NOT in git)
+```
+
+**Rule:** logic lives in `src/`. The CLI and the app only call `src/`.
+
+**What is NOT pushed to GitHub** (too big, see `.gitignore`): `.venv/`, `Moment_DETR/`,
+`data/features/`, `data/qvh_frames*/`, `data/qvh_thumbnails/`, `*.tar.gz`, `*.pt`, `*.ckpt`,
+`outputs/`, `checkpoints/`.
+
+---
+
+## 4. Setup (first time only)
+
+Commands are for **Windows PowerShell**, run from the project folder.
+
+**Step 1 — Python environment**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+# Install PyTorch first (pick the CUDA version of your GPU from pytorch.org), for example:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
+```
+
+**Step 2 — Moment-DETR (M1) code + checkpoint**
+
+```powershell
+git clone https://github.com/jayleicn/moment_detr Moment_DETR/moment_detr
+```
+
+The checkpoint is already inside it at
+`Moment_DETR/moment_detr/run_on_video/moment_detr_ckpt/model_best.ckpt`.
+
+**Step 3 — Data**
+
+- **Video features:** the official QVHighlights CLIP features (`moment_detr_features.tar.gz`)
+  extracted so the `.npz` files are in `data/features/clip_features/`.
+- **Frames / thumbnails:** `data/qvh_frames/`, `data/qvh_frames_within_neg/`, `data/qvh_thumbnails/`,
+  made by `notebooks/data_prep_colab.ipynb` (keep them on Google Drive, copy them here).
+- Want the data in another folder? Set `$env:THUMB_DATA_DIR = "D:\path\to\data"`.
+
+**Step 4 — Check everything**
+
+```powershell
+python -m src.cli check        # lists every package / file as [ok] or [MISSING]
+python -m pytest tests -q      # run the tests
 ```
 
 ---
 
-## Quick start
+## 5. How to run it
 
-### 1. Install
-
-```powershell
-python -m pip install -r requirements.txt
-# or, minimal:
-python -m pip install torch transformers pillow opencv-python numpy pandas matplotlib pyyaml tqdm pytest scipy
-```
-
-### 2. Verify everything parses
+Put these two lines first in every new PowerShell window (offline mode = don't try to download models;
+utf-8 = no text-printing errors):
 
 ```powershell
-python -m pytest tests/test_aggregate.py -q
-# expected: 18 passed
+$env:HF_HUB_OFFLINE = "1"; $env:PYTHONIOENCODING = "utf-8"
 ```
 
-### 3. Run the data pipeline
+### A. Command line (`python -m src.cli ...`)
 
-Open [notebooks/data_collection_preparation.ipynb](notebooks/data_collection_preparation.ipynb) on Colab and run sections 1 → 18 in order. The patched cells produce:
-
-```
-processed/
-├── m1_train_subset.jsonl          # 2000-sample QVH-format subset
-├── m1_val.jsonl                   # full official val
-├── m2_train_pairs.jsonl           # ~1608 (frame, query) pairs
-├── m2_val_pairs.jsonl             # ~300 val pairs (early-stop)
-├── consistency_eval.jsonl         # ★ 600 pos+neg pairs (PRIMARY EVAL SET)
-├── thumbnail_index.jsonl          # real YouTube thumbnails (domain-gap)
-├── m2_image_emb.npz               # cached CLIP-img embeddings
-├── thumbnail_image_emb.npz        # cached embeddings for real thumbnails
-├── category_map.json
-└── download_log.json
-```
-
-### 4. Run the Day-1 evening smoke test (CRITICAL)
-
-```
-notebooks/sanity_consistency.ipynb
-```
-
-This scores the 600-pair eval set using **ground-truth QVH queries** (no M2 needed).
-**Gate before Day 2:**
-
-| Outcome | Action |
+| Command | What it does |
 |---|---|
-| AUC ≥ 0.75 | Formula works. Continue with M2 training. |
-| 0.6 ≤ AUC < 0.75 | Borderline. Adjust α / τ / top_p in `configs/consistency.yaml`. |
-| AUC < 0.6 | Formula broken. **Stop and debug** before training. |
+| `python -m src.cli check` | Show what is installed and what is missing |
+| `python -m src.cli generate --image IMG --gen vlm -k 3` | Only M2: thumbnail → queries |
+| `python -m src.cli score --image IMG --vid VID --gen gt --qid QID` | Full score using the real query |
+| `python -m src.cli score --image IMG --vid VID --queries "your sentence"` | Full score with your own sentence |
+| `python -m src.cli evaluate --set easy --gen gt random --limit 100` | AUC on an evaluation set |
+| `python -m src.cli train-clipcap --epochs 20` | Train ClipCap (saves to `checkpoints/clipcap_best.pt`) |
 
-### 5. Train M2
+- `VID` is a QVHighlights video id like `QriapOfdU64_60.0_210.0` (its `.npz` must exist in the features folder).
+- `--set` can be `easy`, `hard`, `query_mismatch`, or a path to your own JSONL.
+- `--output result.json` saves the score result to a file.
 
-```
-notebooks/train_clipcap.ipynb
-```
+**What the score output means:**
 
-Reads `configs/clipcap.yaml`, trains the prefix MLP on `m2_train_pairs.jsonl`, early-stops on **CLIP-text similarity** on `m2_val_pairs.jsonl`, saves to `outputs/checkpoints/clipcap_best.pt`. Also generates K=3 nucleus-sampled queries for every eval pair into `outputs/predictions/m2_generated.jsonl`.
-
-### 6. Run full evaluation + ablation
-
-```
-notebooks/run_evaluation.ipynb
-```
-
-Computes AUC + score separation for all 5 query sources in `configs/eval.yaml`:
-
-```
-ablation_query_sources:
-  - gt_query        # GT QVH query (ceiling)
-  - clipcap_k3      # 3 nucleus-sampled M2 queries
-  - clipcap_k1      # single beam-3 M2 query
-  - thumb_only      # α=0 (no query path)
-  - random_query    # control
-```
-
-Outputs `outputs/figures/ablation_table.csv` and `score_distribution.png`.
-
----
-
-## Data pipeline — what changed
-
-### Bug fixes applied to the data notebook
-
-| ID | Cell | Fix |
-|---|---|---|
-| B1 | `load_jsonl`, `save_jsonl` | Explicit `encoding="utf-8"`, `ensure_ascii=False` |
-| B2 | `infer_category` | Added `VLOG_KEYWORDS`, `"other"` bucket; writes `category_map.json` |
-| B3 | `download_clip` | Fallback `player_client` chain (android→web→ios), stderr captured, deterministic `video_downloaded` flag |
-| B4 | `extract_frame` | MSEC-based seeking (VFR-safe) |
-| B5 | `extract_frame` | `clip_score` populated on both fresh-extract **and** cached paths |
-| B6 | `extract_frame` | Counter reflects "frames-with-score" (not just frame existence) |
-
-### New cells added (sections 13–18)
-
-| Section | Output | Purpose |
-|---|---|---|
-| 13. Thumbnail download | `qvh_thumbnails/*.jpg` + `thumbnail_index.jsonl` | Real YouTube thumbnails via `yt-dlp --write-thumbnail` |
-| 14. M1 subset builder | `m1_train_subset.jsonl`, `m1_val.jsonl` | Official QVH-schema files (M1 audit / optional retrain) |
-| 15. M2 val builder | `m2_val_pairs.jsonl` | ~300 stratified val pairs for early-stopping |
-| 16. Consistency eval | `consistency_eval.jsonl` | **Primary eval**: 300 positives + 300 hard negatives (CLIP-text-cos < 0.6) |
-| 17. Embedding cache | `m2_image_emb.npz`, `thumbnail_image_emb.npz` | Avoid re-encoding during evaluation loop |
-| 18. Manifest | Console print | Sanity checklist |
-
-All new cells start with the sentinel `# [PIPELINE_PATCH_v1]` so re-running the patch script is idempotent.
-
----
-
-## Architecture — what's frozen, what's trained
-
-| Component | State | Params | Trainable? |
-|---|---|---|---|
-| CLIP-ViT-B/32 (visual) | Pretrained | 150M | ❌ Frozen |
-| CLIP-text | Pretrained | 63M | ❌ Frozen |
-| GPT-2 small | Pretrained | 117M | ❌ Frozen |
-| SlowFast | Pre-extracted features only | — | ❌ Not used at inference |
-| Moment-DETR transformer | Official checkpoint | ~8M | ❌ Frozen (we do NOT retrain) |
-| **M2 prefix MLP** | **★ TRAINED** | ~12M | ✅ Yes |
-| (optional V1.1) consistency head | TRAINED | ~100 | ✅ Yes (if time) |
-| Aggregation module | Deterministic math | 0 | ❌ Pure functions |
-
-> "Why don't we retrain M1?" — The official checkpoint was trained on the full 7,218-sample QVHighlights train set and achieves R1@0.5 = 53%. Retraining on our 2,000 subset would give ~45% — strictly worse. M1 is a baseline; the novelty is the consistency formulation, not the retrieval model.
-
----
-
-## Scoring math (recap from FINAL_DESIGN Appendix A)
-
-**Per-chunk pooled video feature** (`src.scoring.aggregate.saliency_weighted_pool`):
-
-```
-e_clip_w = Σ_t softmax(s[t]/τ) · v[t],   τ=0.1, top 25% by saliency only
-```
-
-**Per-(query, chunk) score** (`src.scoring.aggregate.per_chunk_score`):
-
-```
-c(k, w) = α · cos(e_qk, e_clip_w) + (1-α) · cos(e_T, e_clip_w),   α=0.5
-```
-
-**Final aggregation** (`src.scoring.aggregate.aggregate_consistency`):
-
-```
-C(T, V) = (1/K) · Σ_k max_w c(k, w)        # mean over queries, max over chunks
-```
-
-These are pure NumPy functions and are unit-tested in `tests/test_aggregate.py`.
-
----
-
-## Per-role day-1 to day-3 ownership
-
-| Role | Modules owned | Day 1 task | Day 2 task | Day 3 task |
-|---|---|---|---|---|
-| **A — M1** | [src/models/moment_detr.py](src/models/moment_detr.py) | Verify official ckpt loads; cache video features for eval vids | Run saliency sanity on 5 examples | Build saliency-heatmap figures (5 cases) |
-| **B — M2** | [src/models/clipcap.py](src/models/clipcap.py), [src/data/m2_dataset.py](src/data/m2_dataset.py), [notebooks/train_clipcap.ipynb](notebooks/train_clipcap.ipynb) | Train ClipCap on 1608 pairs | Pick best ckpt; generate K=3 queries for eval | M2 qualitative table (10 cases) |
-| **C — Data** | [notebooks/data_collection_preparation.ipynb](notebooks/data_collection_preparation.ipynb) | Run patched notebook end-to-end; produce all `processed/*` artifacts | Help with manual labeling (50 pairs) | Build frame-vs-real-thumbnail gap figure |
-| **D — Scoring** | [src/scoring/](src/scoring/), [src/eval/metrics.py](src/eval/metrics.py), [notebooks/sanity_consistency.ipynb](notebooks/sanity_consistency.ipynb), [notebooks/run_evaluation.ipynb](notebooks/run_evaluation.ipynb) | **Run R1 smoke test with GT queries** | Run full ablation; produce AUC table | τ / top_p sensitivity sweep |
-
----
-
-## Risk gates
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Gate 1 (end of Day 1): GT-query AUC ≥ 0.75 on 600 pairs    │
-│   → If yes: proceed with M2 training                        │
-│   → If no:  the score formula is broken — fix first         │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│ Gate 2 (mid Day 2): M2 val CLIP-text-sim ≥ 0.55             │
-│   → If yes: generate K=3 queries and run full ablation      │
-│   → If no:  fall back to GT-query results (still publish)   │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│ Gate 3 (end of Day 2): clipcap_k3 AUC ≥ random_query AUC    │
-│   → Confirms M2 contributes signal beyond noise             │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Configs
-
-All hyperparameters live in `configs/` — no code changes needed for ablations.
-
-### `configs/clipcap.yaml`
-- `prefix_len: 10`, `freeze_gpt2: true`
-- `lr: 2e-4`, `epochs: 20`, `early_stop_patience: 3`
-- Generation: `top_p=0.9, temperature=1.1, num_return_sequences=3, no_repeat_ngram_size=2`
-
-### `configs/consistency.yaml`
-- `alpha: 0.5`, `tau: 0.1`, `top_p: 0.25`
-- `chunk_window: 75`, `chunk_stride: 60`
-- Paths to feature dirs and the M1 checkpoint
-
-### `configs/eval.yaml`
-- The 5-source ablation list
-- Output paths
-
----
-
-## How to run the tests
-
-```powershell
-python -m pytest tests/ -q
-```
-
-Current status: **18/18 passing** (cosine endpoints, saliency pool top-p, multi-query aggregation, ROC-AUC, Cohen's d, chunk indexing).
-
----
-
-## Where to find more
-
-| Topic | Document |
+| Field | Meaning |
 |---|---|
-| Architecture decisions + open questions | [docs/FINAL_DESIGN.md](docs/FINAL_DESIGN.md) |
-| Why we picked ClipCap | [docs/research/m2_thumbnail_query_generation.md](docs/research/m2_thumbnail_query_generation.md) |
-| Moment-DETR internals | [docs/research/moment_detr_architecture.md](docs/research/moment_detr_architecture.md) |
-| M1 training data spec | [docs/research/m1_training_pipeline.md](docs/research/m1_training_pipeline.md) |
-| Known limitations | [docs/research/current_limitations.md](docs/research/current_limitations.md) |
-| Ablation plan | [docs/research/ablation_ideas.md](docs/research/ablation_ideas.md) |
-| Strategic Q&A | [docs/research/research_direction_guidance.md](docs/research/research_direction_guidance.md) |
+| `C` | **The final consistency score.** Higher = more consistent. |
+| `per_query` | Score for each query (C is their average) |
+| `max_fg_prob` | How confident Moment-DETR is that it found a matching moment (0–1) |
+| `top_moments` | `[start_sec, end_sec, confidence]` of the best moment per query |
+| `thumb_video_max_cos` | Best direct similarity between the thumbnail and any video clip |
 
----
-
-## Notebook backup / rollback
-
-The data patcher creates a backup on first run:
-
-```
-notebooks/data_collection_preparation.ipynb       # patched (current)
-notebooks/data_collection_preparation.ipynb.bak   # original (untouched after first patch)
-```
-
-To restore the original:
+### B. Website (Flask app)
 
 ```powershell
-Copy-Item notebooks/data_collection_preparation.ipynb.bak `
-          notebooks/data_collection_preparation.ipynb -Force
+python -m app --port 5050
+# open http://127.0.0.1:5050 in the browser
 ```
 
-To re-apply the patch (idempotent — won't duplicate cells):
+Upload a thumbnail, write the video id, choose a generator (or type queries) → get the score
+and a verdict (`consistent` if score ≥ `app.threshold` in `config.yaml`).
+
+API for other programs:
+
+- `GET /health` → which models/files were found
+- `GET /v1/generators` → list of generators
+- `POST /v1/score` → JSON `{"thumbnail_path", "vid", "gen", "k", "qid", "queries"}` or a form upload with a `thumbnail` file
+
+---
+
+## 6. Ready example to try
+
+From `consistency_eval_hard.jsonl`: video `QriapOfdU64_60.0_210.0`, query id `5399`:
+*"The man in the black, white and yellow t-shirt is showing places to be visited in Istanbul, Turkey"*.
 
 ```powershell
-python scripts/patch_data_notebook.py
+$env:HF_HUB_OFFLINE = "1"; $env:PYTHONIOENCODING = "utf-8"
+
+# 1) Correct thumbnail + correct query  -> expect a HIGHER C
+python -m src.cli score --image data\qvh_frames\QriapOfdU64_60.0_210.0.jpg --vid QriapOfdU64_60.0_210.0 --gen gt --qid 5399 -k 1
+
+# 2) Same thumbnail, unrelated query  -> expect a LOWER C
+python -m src.cli score --image data\qvh_frames\QriapOfdU64_60.0_210.0.jpg --vid QriapOfdU64_60.0_210.0 --queries "A woman cooks pasta in a kitchen."
+
+# 3) Thumbnail from outside the matching moment (hard negative)  -> expect a slightly LOWER C
+python -m src.cli score --image data\qvh_frames_within_neg\QriapOfdU64_60.0_210.0_clip0.jpg --vid QriapOfdU64_60.0_210.0 --gen gt --qid 5399 -k 1
+
+# 4) Small evaluation (fast, no GPU model needed)
+python -m src.cli evaluate --set easy --gen gt random --limit 100
 ```
 
----
-
-## Conventions
-
-- All file IO uses `encoding="utf-8"` and `ensure_ascii=False`.
-- All random seeds: `2026` (set via `src.utils.seed.set_seed`).
-- Notebooks **import** from `src.*` — never duplicate logic.
-- All shared math goes through `src.scoring.aggregate.*` (the only "single source of truth" for the score).
-- All produced artifacts go to `outputs/{checkpoints,predictions,figures}/`.
+> The numbers from these commands have not been written here yet. Add them after the first run.
 
 ---
 
-## Open questions (resolved or pending)
+## 7. Evaluation and results so far
 
-See [docs/FINAL_DESIGN.md §8](docs/FINAL_DESIGN.md). Headline items:
+There are **3 test sets** in `data/processed/` (more details in `data/processed/README.md`).
+Each has 300 good pairs (label 1) and about 300 bad pairs (label 0):
 
-| # | Question | Status |
+| Set | How the bad pairs are made | What it tests |
 |---|---|---|
-| Q1 | subs_train pretraining for M2? | Pending (Day 1 spare time only) |
-| Q2 | Train a learned consistency head? | Pending (Day 3 if time) |
-| Q3 | Include SlowFast in M1 input? | Resolved: **No** — official ckpt is CLIP-only |
-| Q4 | Manual label count: 50 vs 100? | Resolved: **50**, split across team |
-| Q5 | Beam-3 vs nucleus for M2 inference? | Resolved: **nucleus default**, beam as ablation |
-| Q6 | α weight (sim_qv vs sim_Tv)? | Resolved: **0.5 / 0.5**, sensitivity sweep on Day 3 |
+| `easy` (`consistency_eval.jsonl`) | Thumbnail from video A, scored against a different video B | Can it tell different videos apart? |
+| `hard` (`consistency_eval_hard.jsonl`) | Same video, but a frame from **outside** the matching moment | Can it find the **right moment**? |
+| `query_mismatch` | Same thumbnail and video, but a query about another topic | Does it really **use the query**? |
+
+**Metrics:** **AUC** (0.5 = random guessing, 1.0 = perfect) and **Cohen's d** (how far apart the
+good and bad scores are; above 0.8 is a big difference).
+
+**Results (all 600 pairs, k = 1, alpha = 0.5):**
+
+| Generator | Set | AUC | Cohen's d | Mean good | Mean bad |
+|---|---|---|---|---|---|
+| `gt` | easy | **0.961** | 2.39 | 0.298 | 0.206 |
+| `random` | easy | 0.568 | 0.23 | 0.211 | 0.201 |
+| `gt` | hard | 0.637 | 0.45 | 0.511 | 0.481 |
+| `gt` | query_mismatch | **0.991** | 3.24 | 0.298 | 0.172 |
+
+**What this tells us:**
+- With good queries the score separates matching and non-matching videos very well (0.96).
+- Random queries are close to 0.5, as expected, so the score is not cheating.
+- `query_mismatch` at 0.99: the score really depends on the query.
+- `hard` is the weak point (0.64): finding the exact moment inside the same video is difficult.
+  This is the main thing to improve.
+
+---
+
+## 8. Current status: what works, what is pending
+
+**✅ Works now (no big model download needed):**
+- `check`, `score` with `gt` or your own `--queries`, `evaluate` with `gt` / `random`
+- The website with `gt` or typed queries
+- Tests in `tests/`
+
+**⏳ Pending:**
+- **`vlm` generator:** the Qwen2-VL-2B download was stopped (the PC ran low on memory). Run it again when RAM is free.
+- **`clipcap` generator:** training was stopped for the same reason. Run
+  `python -m src.cli train-clipcap` (or `--max-train 2000` for a small quick test).
+- Comparing `vlm` and `clipcap` against `gt` on all 3 sets.
+- Improving the `hard` set score.
+
+**Tips for a 4 GB GPU / low-RAM PC:** close other programs, run one heavy job at a time,
+use `--limit` in `evaluate`, and keep `load_in_4bit: true` for the VLM.
+
+---
+
+## 9. Common problems
+
+| Problem | Reason | Fix |
+|---|---|---|
+| `check` shows `Moment-DETR code MISSING` | `Moment_DETR/` not cloned | Do Setup step 2 |
+| `video features MISSING` / `FileNotFoundError ... .npz` | Features not extracted, or wrong `--vid` | Extract into `data/features/clip_features/`; check the vid name |
+| `generator 'gt' requires qid` | `gt` needs the query id | Add `--qid` |
+| `unknown generator` | Name is wrong | Use `gt`, `random`, `vlm`, or `clipcap` |
+| Model tries to download / hangs | Not offline | `$env:HF_HUB_OFFLINE = "1"` (only after the model is downloaded once) |
+| `UnicodeEncodeError` when printing | Windows console encoding | `$env:PYTHONIOENCODING = "utf-8"` |
+| CUDA out of memory | GPU too small | Use the 2B VLM in 4-bit, smaller `-k`, close other programs |
+| Process killed / PC freezes | Not enough RAM | Run one heavy job at a time |
+
+---
+
+## Changelog
+
+Add a new line at the top every time you change something.
+
+| Date | Branch | Change |
+|---|---|---|
+| 2026-11-05 | `refactor` | Big cleanup. One `config.yaml` instead of many configs. `src/` reduced to a few flat files. New CLI (`check / generate / score / evaluate / train-clipcap`). Simpler Flask app. Old docs, notebooks and scripts removed. First results added (gt / random on 3 sets). |
+
+---
+
+## License
+
+MIT, see `LICENSE`.
