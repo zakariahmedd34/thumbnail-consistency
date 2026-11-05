@@ -4,28 +4,22 @@
 >
 > We give the system a **thumbnail image** and a **video**. It returns a **score**.
 > High score = the thumbnail matches the video. Low score = the thumbnail is misleading (clickbait).
-
-This file is the **living document** of the project. Update it every time something changes
-(see [Changelog](#changelog) at the bottom).
-
 ---
 
 ## Contents
 
-1. [The idea in simple words](#1-the-idea-in-simple-words)
+1. [The idea](#1-the-idea)
 2. [How the pipeline works](#2-how-the-pipeline-works)
 3. [Project folders and files](#3-project-folders-and-files)
 4. [Setup (first time only)](#4-setup-first-time-only)
 5. [How to run it](#5-how-to-run-it)
 6. [Ready example to try](#6-ready-example-to-try)
-7. [Evaluation and results so far](#7-evaluation-and-results-so-far)
-8. [Current status: what works, what is pending](#8-current-status-what-works-what-is-pending)
-9. [Common problems](#9-common-problems)
-10. [Changelog](#changelog)
+7. [How the system is evaluated](#7-how-the-system-is-evaluated)
+8. [Common problems](#8-common-problems)
 
 ---
 
-## 1. The idea in simple words
+## 1. The idea
 
 A thumbnail is a promise: "this is what you will see". To check that promise we:
 
@@ -43,21 +37,21 @@ All the comparing is done with **CLIP**, a model that turns images and text into
 
 ## 2. How the pipeline works
 
-```
- Thumbnail ──► M2 generator ──► K queries (sentences)
-     │                               │
-     │ CLIP image                    │ CLIP text
-     ▼                               ▼
-    e_T                            e_q (one per query)
-     │                               │
-     │      Video features ──► Moment-DETR (M1) ──► "saliency": how relevant each 2-second clip is
-     │            │                                   │
-     │            └──── weighted average of the most relevant clips ◄──┘
-     │                               │
-     └──────────────► compare ◄──────┘
-                         ▼
-                 score C (one number)
-```
+![Thumbnail–video consistency pipeline](images/thumbnail_consistency_pipeline_vf.png)
+
+How to read the diagram:
+
+1. **Describe the thumbnail.** The M2 generator (VLM or ClipCap) writes K descriptions. CLIP turns them
+   into a pooled text embedding `e_qk` (one per description) and into text tokens for Moment-DETR.
+   The thumbnail itself goes through the CLIP image encoder to get `e_T`.
+   (The `gt` and `random` generators are baselines and plug into the same M2 slot.)
+2. **Find and pool the relevant video content.** Moment-DETR (M1) reads the video features
+   (CLIP, one per 2-second clip) together with the text tokens. Its saliency head gives a score
+   `s_k,t` for every clip. We keep the top clips in each window and average them, weighted by saliency,
+   to get `e_w,k`. The moment spans that Moment-DETR predicts (gray branch) are shown in the output
+   but are **not used** in the score.
+3. **Calculate the score.** Cosine similarity text–video and thumbnail–video, weighted sum with `alpha`,
+   max over windows, mean over the K descriptions → `C(T, V)`.
 
 **The formula** (in `src/scoring.py`):
 
@@ -75,12 +69,12 @@ C = average over queries of  max over video windows of
 
 ### The M2 generators (who writes the queries)
 
-| Name | What it does | Needs GPU? | Status |
-|---|---|---|---|
-| `gt` | Uses the real human-written QVHighlights query. **Best possible case (upper bound).** | No | ✅ works |
-| `random` | Picks a random query. **Control: should score badly (AUC ≈ 0.5).** | No | ✅ works |
-| `vlm` | A vision-language model (Qwen2-VL-2B, 4-bit) describes the image. | Yes | ⏳ model download not finished |
-| `clipcap` | Our own small trained model: CLIP + a small MLP + GPT-2. **The only part we train.** | Yes (training) | ⏳ needs training |
+| Name | What it does | Needs GPU? |
+|---|---|---|
+| `gt` | Uses the real human-written QVHighlights query. **Best possible case (upper bound).** | No |
+| `random` | Picks a random query. **Control: should score badly (AUC ≈ 0.5).** | No |
+| `vlm` | A vision-language model (Qwen2-VL-2B, 4-bit) describes the image. | Yes |
+| `clipcap` | Our own small trained model: CLIP + a small MLP + GPT-2. **The only part we train.** | Yes (training) |
 
 You can also skip M2 completely and type your own queries with `--queries`.
 
@@ -90,7 +84,7 @@ You can also skip M2 completely and type your own queries with `--queries`.
 
 ```
 thumbnail-consistency/
-├── README.md            ← this document
+├── README.md            ← this document (how the system works, how to run it)
 ├── config.yaml          ← THE single settings file (paths, scoring, models, app)
 ├── requirements.txt     ← Python packages
 ├── src/                 ← all the real logic
@@ -112,6 +106,7 @@ thumbnail-consistency/
 ├── tests/               ← pytest tests
 ├── notebooks/
 │   └── data_prep_colab.ipynb  ← how the data in data/ was built (run on Colab)
+├── pipeline_image/      ← pipeline diagram (README uses thumbnail_consistency_pipeline_vf.png)
 ├── data/                ← data (big files are NOT in git, see below)
 │   └── processed/       ← JSONL files: train/val/test + the 3 evaluation sets (in git)
 ├── Moment_DETR/         ← upstream Moment-DETR code + checkpoint (NOT in git, you clone it)
@@ -240,11 +235,9 @@ python -m src.cli score --image data\qvh_frames_within_neg\QriapOfdU64_60.0_210.
 python -m src.cli evaluate --set easy --gen gt random --limit 100
 ```
 
-> The numbers from these commands have not been written here yet. Add them after the first run.
-
 ---
 
-## 7. Evaluation and results so far
+## 7. How the system is evaluated
 
 There are **3 test sets** in `data/processed/` (more details in `data/processed/README.md`).
 Each has 300 good pairs (label 1) and about 300 bad pairs (label 0):
@@ -258,44 +251,9 @@ Each has 300 good pairs (label 1) and about 300 bad pairs (label 0):
 **Metrics:** **AUC** (0.5 = random guessing, 1.0 = perfect) and **Cohen's d** (how far apart the
 good and bad scores are; above 0.8 is a big difference).
 
-**Results (all 600 pairs, k = 1, alpha = 0.5):**
-
-| Generator | Set | AUC | Cohen's d | Mean good | Mean bad |
-|---|---|---|---|---|---|
-| `gt` | easy | **0.961** | 2.39 | 0.298 | 0.206 |
-| `random` | easy | 0.568 | 0.23 | 0.211 | 0.201 |
-| `gt` | hard | 0.637 | 0.45 | 0.511 | 0.481 |
-| `gt` | query_mismatch | **0.991** | 3.24 | 0.298 | 0.172 |
-
-**What this tells us:**
-- With good queries the score separates matching and non-matching videos very well (0.96).
-- Random queries are close to 0.5, as expected, so the score is not cheating.
-- `query_mismatch` at 0.99: the score really depends on the query.
-- `hard` is the weak point (0.64): finding the exact moment inside the same video is difficult.
-  This is the main thing to improve.
-
 ---
 
-## 8. Current status: what works, what is pending
-
-**✅ Works now (no big model download needed):**
-- `check`, `score` with `gt` or your own `--queries`, `evaluate` with `gt` / `random`
-- The website with `gt` or typed queries
-- Tests in `tests/`
-
-**⏳ Pending:**
-- **`vlm` generator:** the Qwen2-VL-2B download was stopped (the PC ran low on memory). Run it again when RAM is free.
-- **`clipcap` generator:** training was stopped for the same reason. Run
-  `python -m src.cli train-clipcap` (or `--max-train 2000` for a small quick test).
-- Comparing `vlm` and `clipcap` against `gt` on all 3 sets.
-- Improving the `hard` set score.
-
-**Tips for a 4 GB GPU / low-RAM PC:** close other programs, run one heavy job at a time,
-use `--limit` in `evaluate`, and keep `load_in_4bit: true` for the VLM.
-
----
-
-## 9. Common problems
+## 8. Common problems
 
 | Problem | Reason | Fix |
 |---|---|---|
@@ -308,18 +266,5 @@ use `--limit` in `evaluate`, and keep `load_in_4bit: true` for the VLM.
 | CUDA out of memory | GPU too small | Use the 2B VLM in 4-bit, smaller `-k`, close other programs |
 | Process killed / PC freezes | Not enough RAM | Run one heavy job at a time |
 
----
-
-## Changelog
-
-Add a new line at the top every time you change something.
-
-| Date | Branch | Change |
-|---|---|---|
-| 2026-11-05 | `refactor` | Big cleanup. One `config.yaml` instead of many configs. `src/` reduced to a few flat files. New CLI (`check / generate / score / evaluate / train-clipcap`). Simpler Flask app. Old docs, notebooks and scripts removed. First results added (gt / random on 3 sets). |
-
----
-
-## License
-
-MIT, see `LICENSE`.
+**Tips for a 4 GB GPU / low-RAM PC:** close other programs, run one heavy job at a time,
+use `--limit` in `evaluate`, and keep `load_in_4bit: true` for the VLM.
