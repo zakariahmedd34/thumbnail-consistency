@@ -4,10 +4,6 @@
 >
 > We give the system a **thumbnail image** and a **video**. It returns a **score**.
 > High score = the thumbnail matches the video. Low score = the thumbnail is misleading (clickbait).
-
-This file is the **living document** of the project. Update it every time something changes
-(see [Changelog](#changelog) at the bottom).
-
 ---
 
 ## Contents
@@ -309,17 +305,3 @@ use `--limit` in `evaluate`, and keep `load_in_4bit: true` for the VLM.
 | Process killed / PC freezes | Not enough RAM | Run one heavy job at a time |
 
 ---
-
-## Changelog
-
-Add a new line at the top every time you change something.
-
-| Date | Branch | Change |
-|---|---|---|
-| 2026-11-05 | `refactor` | Big cleanup. One `config.yaml` instead of many configs. `src/` reduced to a few flat files. New CLI (`check / generate / score / evaluate / train-clipcap`). Simpler Flask app. Old docs, notebooks and scripts removed. First results added (gt / random on 3 sets). |
-
----
-
-## License
-
-MIT, see `LICENSE`.
