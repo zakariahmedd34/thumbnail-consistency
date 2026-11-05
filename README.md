@@ -17,8 +17,6 @@
 7. [Evaluation and results so far](#7-evaluation-and-results-so-far)
 8. [Current status: what works, what is pending](#8-current-status-what-works-what-is-pending)
 9. [Common problems](#9-common-problems)
-10. [Changelog](#changelog)
-
 ---
 
 ## 1. The idea in simple words
