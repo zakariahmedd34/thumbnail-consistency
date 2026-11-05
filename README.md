@@ -1,5 +1,7 @@
 # Thumbnail–Video Consistency
 
+![Thumbnail–video consistency: thumbnail, matching video moments, consistency score](images/YouTube_thumbnail.png)
+
 > **Question this project answers:** *Does this thumbnail really show what happens in the video?*
 >
 > We give the system a **thumbnail image** and a **video**. It returns a **score**.
@@ -106,6 +108,7 @@ thumbnail-consistency/
 ├── tests/               ← pytest tests
 ├── notebooks/
 │   └── data_prep_colab.ipynb  ← how the data in data/ was built (run on Colab)
+├── assets/            ← README banner image
 ├── pipeline_image/      ← pipeline diagram (README uses thumbnail_consistency_pipeline_vf.png)
 ├── data/                ← data (big files are NOT in git, see below)
 │   └── processed/       ← JSONL files: train/val/test + the 3 evaluation sets (in git)
