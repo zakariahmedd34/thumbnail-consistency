@@ -269,5 +269,4 @@ good and bad scores are; above 0.8 is a big difference).
 | CUDA out of memory | GPU too small | Use the 2B VLM in 4-bit, smaller `-k`, close other programs |
 | Process killed / PC freezes | Not enough RAM | Run one heavy job at a time |
 
-**Tips for a 4 GB GPU / low-RAM PC:** close other programs, run one heavy job at a time,
-use `--limit` in `evaluate`, and keep `load_in_4bit: true` for the VLM.
+---
